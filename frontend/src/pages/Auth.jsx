@@ -71,7 +71,7 @@ export function Signup() {
     e.preventDefault(); setError('');
     if (f.password !== f.confirm) return setError('Passwords do not match.');
     setBusy(true);
-    try { await signup({ name: f.name, email: f.email, password: f.password }); nav('/dashboard'); } catch (err) { setError(err.message); setBusy(false); }
+    try { await signup({ full_name: f.name, email: f.email, password: f.password }); nav('/dashboard'); } catch (err) { setError(err.message); setBusy(false); }
   };
   return (
     <Shell title="Create your account" footer={<>Already have an account? <Link to="/login" className="font-semibold text-teal-700">Log in</Link></>}>

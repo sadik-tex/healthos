@@ -1,141 +1,379 @@
-// ALL backend calls live here. If your backend differs, edit ENDPOINTS and the normalize* helpers only.
+// HealthOS frontend API client
+// Matches the current FastAPI backend.
+
 import axios from 'axios';
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-// ASSUMED paths (based on the backend README: routers auth, users, reports, chat, dashboard under /api).
-// Verify against http://localhost:8000/docs and change here if needed.
 export const ENDPOINTS = {
-  signup: '/auth/signup',
+  // Authentication
+  signup: '/auth/register',
   login: '/auth/login',
-  me: '/users/me',
+  me: '/auth/me',
+
+  // Dashboard
   dashboard: '/dashboard',
-  reports: '/reports',
-  upload: '/reports/upload',
-  report: (id) => `/reports/${id}`,
-  reportFile: (id) => `/reports/${id}/file`,
-  chat: '/chat',
+
+  // Health tracking
+  water: '/health/water',
+  sleep: '/health/sleep',
+  activity: '/health/activity',
+  weight: '/health/weight',
+
+  // Mood
+  mood: '/mood',
 };
-// Set to true if your login endpoint expects form data (OAuth2PasswordRequestForm: username + password).
-const LOGIN_AS_FORM = false;
 
 const KEY = 'healthos_token';
+
 export const tokenStore = {
   get: () => localStorage.getItem(KEY),
-  set: (t) => localStorage.setItem(KEY, t),
+  set: (token) => localStorage.setItem(KEY, token),
   clear: () => localStorage.removeItem(KEY),
 };
 
-const http = axios.create({ baseURL: BASE });
-http.interceptors.request.use((c) => {
-  const t = tokenStore.get();
-  if (t) c.headers.Authorization = `Bearer ${t}`;
-  return c;
+const http = axios.create({
+  baseURL: BASE,
 });
+
+http.interceptors.request.use((config) => {
+  const token = tokenStore.get();
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+
+  return config;
+});
+
 http.interceptors.response.use(
-  (r) => r,
-  (e) => {
-    const status = e.response?.status;
-    if (status === 401 && tokenStore.get()) window.dispatchEvent(new Event('healthos:unauthorized'));
-    const err = new Error(friendly(e));
+  (response) => response,
+  (error) => {
+    const status = error.response?.status;
+
+    if (status === 401 && tokenStore.get()) {
+      window.dispatchEvent(
+        new Event('healthos:unauthorized')
+      );
+    }
+
+    const err = new Error(friendly(error));
     err.status = status;
+
     return Promise.reject(err);
   }
 );
 
-function friendly(e) {
-  if (!e.response) return 'Cannot reach the server. Check that the backend is running and VITE_API_URL is correct.';
-  const { status, data } = e.response;
-  const d = data?.detail;
-  if (status === 422) return Array.isArray(d) ? d.map((x) => x.msg).join('. ') : 'Some fields are invalid.';
-  if (typeof d === 'string') return d;
-  if (status === 401) return 'Your session has expired. Please log in again.';
-  if (status === 403) return "You don't have permission to do that.";
-  if (status === 404) return 'We could not find what you were looking for.';
-  if (status >= 500) return 'The server ran into a problem. Please try again.';
+function friendly(error) {
+  if (!error.response) {
+    return 'Cannot reach the server. Check that the backend is running.';
+  }
+
+  const { status, data } = error.response;
+  const detail = data?.detail;
+
+  if (status === 422) {
+    if (Array.isArray(detail)) {
+      return detail.map((item) => item.msg).join('. ');
+    }
+
+    return 'Some fields are invalid.';
+  }
+
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  if (status === 401) {
+    return 'Your session has expired. Please log in again.';
+  }
+
+  if (status === 403) {
+    return "You don't have permission to do that.";
+  }
+
+  if (status === 404) {
+    return 'The requested endpoint was not found.';
+  }
+
+  if (status >= 500) {
+    return 'The server ran into a problem. Please try again.';
+  }
+
   return 'Something went wrong.';
 }
 
-// ---------- normalizers: tolerate small differences in backend field names ----------
-const first = (o, ...keys) => { for (const k of keys) if (o?.[k] !== undefined && o?.[k] !== null) return o[k]; };
-const toList = (d, ...keys) => (Array.isArray(d) ? d : first(d, ...keys, 'items', 'data', 'results') || []);
 
-export function normalizeValue(v, key) {
-  if (typeof v !== 'object' || v === null) return { name: key, value: v, unit: '', range: '', status: '' };
-  return {
-    name: first(v, 'name', 'metric', 'test', 'label') || key || 'Value',
-    value: first(v, 'value', 'result'),
-    unit: first(v, 'unit', 'units') || '',
-    range: first(v, 'reference_range', 'range', 'normal_range') || '',
-    status: String(first(v, 'status', 'flag') || '').toUpperCase(),
-  };
-}
-const normalizeValues = (raw) => {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map((v) => normalizeValue(v));
-  return Object.entries(raw).map(([k, v]) => normalizeValue(v, k));
-};
-export function normalizeReport(r) {
-  const id = first(r, 'id', 'report_id');
-  return {
-    id,
-    name: first(r, 'filename', 'file_name', 'name', 'title') || `Report ${String(id).slice(0, 8)}`,
-    date: first(r, 'created_at', 'uploaded_at', 'date'),
-    status: String(first(r, 'status', 'analysis_status') || 'complete').toLowerCase(),
-    type: first(r, 'report_type', 'type'),
-    values: normalizeValues(first(r, 'values', 'extracted_values', 'metrics', 'results')),
-    summary: first(r, 'summary', 'explanation', 'ai_explanation', 'analysis'),
-  };
-}
-export function normalizeDashboard(d) {
-  return {
-    score: first(d, 'health_score', 'score', 'overall_score'),
-    label: first(d, 'status', 'score_label', 'label'),
-    explanation: first(d, 'score_explanation', 'explanation', 'summary'),
-    insights: toList(first(d, 'insights') || [], 'insights').map((i) =>
-      typeof i === 'string' ? { text: i, status: '' } : { text: first(i, 'text', 'message', 'insight', 'description') || '', status: String(first(i, 'status', 'severity', 'level') || '').toUpperCase() }
-    ),
-    metrics: normalizeValues(first(d, 'metrics', 'latest_values', 'values')),
-    recent: toList(first(d, 'recent_reports', 'reports') || [], 'reports').map(normalizeReport),
-  };
-}
+// --------------------------------------------------
+// Authentication
+// --------------------------------------------------
 
-// ---------- API groups ----------
 export const authApi = {
   async login(email, password) {
-    const body = LOGIN_AS_FORM ? new URLSearchParams({ username: email, password }) : { email, password };
-    const { data } = await http.post(ENDPOINTS.login, body);
-    const token = first(data, 'access_token', 'token');
-    if (!token) throw new Error('Login succeeded but the server returned no token.');
+    const { data } = await http.post(
+      ENDPOINTS.login,
+      {
+        email,
+        password,
+      }
+    );
+
+    const token = data?.access_token;
+
+    if (!token) {
+      throw new Error(
+        'Login succeeded but the server returned no token.'
+      );
+    }
+
     return token;
   },
-  signup: (payload) => http.post(ENDPOINTS.signup, payload).then((r) => r.data),
+
+  async signup(payload) {
+    const { data } = await http.post(
+      ENDPOINTS.signup,
+      payload
+    );
+
+    return data;
+  },
 };
+
+
+// --------------------------------------------------
+// User
+// --------------------------------------------------
+
 export const userApi = {
-  me: () => http.get(ENDPOINTS.me).then((r) => r.data),
-  update: (payload) => http.put(ENDPOINTS.me, payload).then((r) => r.data),
+  async me() {
+    const { data } = await http.get(
+      ENDPOINTS.me
+    );
+
+    return data;
+  },
+
+  async update() {
+    throw new Error(
+      'Profile updates are not implemented in the current backend.'
+    );
+  },
 };
-export const dashboardApi = { get: () => http.get(ENDPOINTS.dashboard).then((r) => normalizeDashboard(r.data)) };
+
+
+// --------------------------------------------------
+// Dashboard
+// --------------------------------------------------
+
+export function normalizeDashboard(data) {
+  const today = data?.today || {};
+  const last7 = data?.last_7_days || {};
+
+  return {
+    today: {
+      date: today.date ?? null,
+      water_ml: today.water_ml ?? 0,
+      steps: today.steps ?? 0,
+      exercise_minutes: today.exercise_minutes ?? 0,
+      sleep_minutes: today.sleep_minutes ?? null,
+      weight_kg: today.weight_kg ?? null,
+      mood_score: today.mood_score ?? null,
+    },
+
+    last_7_days: {
+      water: Array.isArray(last7.water)
+        ? last7.water
+        : [],
+
+      activity: Array.isArray(last7.activity)
+        ? last7.activity
+        : [],
+    },
+  };
+}
+
+export const dashboardApi = {
+  async get() {
+    const { data } = await http.get(
+      ENDPOINTS.dashboard
+    );
+
+    return normalizeDashboard(data);
+  },
+};
+
+
+// --------------------------------------------------
+// Health tracking
+// --------------------------------------------------
+
+export const healthApi = {
+
+  // Water
+  addWater: async (amount_ml) => {
+    const { data } = await http.post(
+      ENDPOINTS.water,
+      { amount_ml }
+    );
+
+    return data;
+  },
+
+  getWater: async () => {
+    const { data } = await http.get(
+      ENDPOINTS.water
+    );
+
+    return data;
+  },
+
+
+  // Sleep
+  addSleep: async (
+    sleep_date,
+    duration_minutes,
+    quality = null
+  ) => {
+    const { data } = await http.post(
+      ENDPOINTS.sleep,
+      {
+        sleep_date,
+        duration_minutes,
+        quality,
+      }
+    );
+
+    return data;
+  },
+
+  getSleep: async () => {
+    const { data } = await http.get(
+      ENDPOINTS.sleep
+    );
+
+    return data;
+  },
+
+
+  // Activity
+  addActivity: async (
+    steps,
+    exercise_minutes = 0
+  ) => {
+    const { data } = await http.post(
+      ENDPOINTS.activity,
+      {
+        steps,
+        exercise_minutes,
+      }
+    );
+
+    return data;
+  },
+
+  getActivity: async () => {
+    const { data } = await http.get(
+      ENDPOINTS.activity
+    );
+
+    return data;
+  },
+
+
+  // Weight
+  addWeight: async (weight_kg) => {
+    const { data } = await http.post(
+      ENDPOINTS.weight,
+      {
+        weight_kg,
+      }
+    );
+
+    return data;
+  },
+
+  getWeight: async () => {
+    const { data } = await http.get(
+      ENDPOINTS.weight
+    );
+
+    return data;
+  },
+};
+
+
+// --------------------------------------------------
+// Mood
+// --------------------------------------------------
+
+export const moodApi = {
+
+  add: async (mood_score, journal = null) => {
+    const { data } = await http.post(
+      ENDPOINTS.mood,
+      {
+        mood_score,
+        journal,
+      }
+    );
+
+    return data;
+  },
+
+  get: async () => {
+    const { data } = await http.get(
+      ENDPOINTS.mood
+    );
+
+    return data;
+  },
+};
+
+
+// --------------------------------------------------
+// Legacy report API
+// --------------------------------------------------
+// The current backend does not have medical reports.
+// These exports are kept so existing frontend imports
+// don't crash during compilation.
+
 export const reportsApi = {
-  list: () => http.get(ENDPOINTS.reports).then((r) => toList(r.data, 'reports').map(normalizeReport)),
-  get: (id) => http.get(ENDPOINTS.report(id)).then((r) => normalizeReport(r.data)),
-  upload(file, onProgress) {
-    const form = new FormData();
-    form.append('file', file);
-    return http.post(ENDPOINTS.upload, form, {
-      onUploadProgress: (e) => e.total && onProgress?.(Math.round((e.loaded / e.total) * 100)),
-    }).then((r) => normalizeReport(r.data));
+  async list() {
+    throw new Error(
+      'Medical reports are not implemented in the current backend.'
+    );
   },
-  async openFile(id) {
-    const res = await http.get(ENDPOINTS.reportFile(id), { responseType: 'blob' });
-    window.open(URL.createObjectURL(res.data), '_blank');
+
+  async get() {
+    throw new Error(
+      'Medical reports are not implemented in the current backend.'
+    );
+  },
+
+  async upload() {
+    throw new Error(
+      'Medical report uploads are not implemented in the current backend.'
+    );
+  },
+
+  async openFile() {
+    throw new Error(
+      'Medical reports are not implemented in the current backend.'
+    );
   },
 };
+
+
+// --------------------------------------------------
+// Legacy AI chat API
+// --------------------------------------------------
+// AI assistant backend is planned but not implemented
+// in the current backend.
+
 export const chatApi = {
-  async send(message, reportId) {
-    const payload = { message };
-    if (reportId) payload.report_id = reportId;
-    const { data } = await http.post(ENDPOINTS.chat, payload);
-    return typeof data === 'string' ? data : first(data, 'reply', 'response', 'answer', 'message') || '';
+  async send() {
+    throw new Error(
+      'AI chat is not implemented in the current backend.'
+    );
   },
 };
